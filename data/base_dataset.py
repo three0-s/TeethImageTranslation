@@ -6,6 +6,7 @@ import random
 import numpy as np
 import torch.utils.data as data
 from PIL import Image
+import torchvision
 import torchvision.transforms as transforms
 from abc import ABC, abstractmethod
 
@@ -78,7 +79,7 @@ def get_params(opt, size):
     return {'crop_pos': (x, y), 'flip': flip}
 
 
-def get_transform(opt, params=None, grayscale=False, method=Image.BICUBIC, convert=True):
+def get_transform(opt, params=None, grayscale=False, method=Image.BICUBIC, convert=True, rotate=False):
     transform_list = []
     if grayscale:
         transform_list.append(transforms.Grayscale(1))
@@ -103,6 +104,8 @@ def get_transform(opt, params=None, grayscale=False, method=Image.BICUBIC, conve
         elif params['flip']:
             transform_list.append(transforms.Lambda(lambda img: __flip(img, params['flip'])))
 
+    if rotate:
+        transform_list.append(transforms.RandomRotation([-30, 30]))
     if convert:
         transform_list += [transforms.ToTensor()]
         if grayscale:

@@ -47,7 +47,11 @@ class AlignedDataset(BaseDataset):
 
         # apply the same transform to both A and B
         transform_params = get_params(self.opt, A.size)
-        A_transform = get_transform(self.opt, transform_params, grayscale=(self.input_nc == 1))
+
+        # TeethImageTranslation -> A should be the input of model (profile teeth image)
+        # In Teeth Image Translation, only A-to-B mode is allowed.
+                                    # : rotate randomly at a range of (-30, 30) degrees.
+        A_transform = get_transform(self.opt, transform_params, grayscale=(self.input_nc == 1), rotate=True)
         B_transform = get_transform(self.opt, transform_params, grayscale=(self.output_nc == 1))
 
         A = A_transform(A)
