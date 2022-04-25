@@ -23,19 +23,49 @@ from options.train_options import TrainOptions
 from data import create_dataset
 from models import create_model
 from util.visualizer import Visualizer
-import copy
+import torchvision
+from copy import copy
 import numpy as np
 import torch
 from tqdm import tqdm
-import torchvision.transforms as TF
 from torchvision.models.inception import inception_v3
 from scipy import linalg
-from torch.nn.functional import adaptive_avg_pool2d
+import os
+
 
 # Pretrained inception model
 print(f"Loading pretrained inception v3 model...")
-inception = inception_v3(pretrained=True)
-inception = torch.nn.Sequential((inception.children())[:-1])
+class PartialInceptionNetwork(torch.nn.Module):
+    def __init__(self, transform_input=False):
+        super().__init__()
+        self.inception_network = inception_v3(pretrained=True)
+        self.inception_network.Mixed_7c.register_forward_hook(self.output_hook)
+        self.transform_input = transform_input
+
+    def output_hook(self, module, input, output):
+        # N x 2048 x 8 x 8
+        self.mixed_7c_output = output
+
+    def forward(self, x):
+        """
+        Args:
+            x: shape (N, 3, 299, 299) dtype: torch.float32 in range 0-1
+        Returns:
+            inception activations: torch.tensor, shape: (N, 2048), dtype: torch.float32
+        """
+        assert x.shape[1:] == (3, 299, 299), "Expected input shape to be: (N,3,299,299)" +\
+                                             ", but got {}".format(x.shape)
+        x = x * 2 -1 # Normalize to [-1, 1]
+
+        # Trigger output hook
+        self.inception_network(x)
+
+        # Output: N x 2048 x 1 x 1 
+        activations = self.mixed_7c_output
+        activations = torch.nn.functional.adaptive_avg_pool2d(activations, (1,1))
+        activations = activations.view(x.shape[0], 2048)
+        return activations
+inception = PartialInceptionNetwork()
 
 
 def calculate_frechet_distance(mu1, mu2, cov1, cov2, eps=1e-6):
@@ -95,8 +125,9 @@ if __name__ == '__main__':
     opt = TrainOptions().parse()   # get training options
     dataset = create_dataset(opt)  # create a dataset given opt.dataset_mode and other options
     opt_val = copy(opt)
-    opt_val['phase']='val'
-
+    opt_val.phase='val'
+    opt_val.rotate=False
+   
     valid_data = create_dataset(opt_val)
     dataset_size = len(dataset)    # get the number of images in the dataset.
     print('The number of training images = %d' % dataset_size)
@@ -105,13 +136,40 @@ if __name__ == '__main__':
     model.setup(opt)               # regular setup: load and print networks; create schedulers
     visualizer = Visualizer(opt)   # create a visualizer that display/save images and plots
     total_iters = 0                # the total number of training iterations
-
+    inception.to(model.device)
+    inception.eval()
+    resize_layer = torchvision.transforms.Resize((299, 299)).to(model.device)
     for epoch in range(opt.epoch_count, opt.n_epochs + opt.n_epochs_decay + 1):    # outer loop for different epochs; we save the model by <epoch_count>, <epoch_count>+<save_latest_freq>
         epoch_start_time = time.time()  # timer for entire epoch
         iter_data_time = time.time()    # timer for data loading per iteration
         epoch_iter = 0                  # the number of training iterations in current epoch, reset to 0 every epoch
         visualizer.reset()              # reset the visualizer: make sure it saves the results to HTML at least once every epoch
         model.update_learning_rate()    # update learning rates in the beginning of every epoch.
+        
+        # calculate FID at every 10 epoch
+        if epoch % 10 == 1:
+            pred_features, true_features = [], []
+            print("Calculating FID...")
+
+            for i, val_data in tqdm(enumerate(valid_data), total=len(valid_data)):
+                model.set_input(val_data)
+                model.test()
+               
+                # feature extraction
+                pred_feature = inception(resize_layer(model.fake_B))
+                true_feature = inception(resize_layer(model.real_B))
+                pred_features.append(pred_feature.detach().cpu().numpy())
+                true_features.append(true_feature.detach().cpu().numpy())
+
+            # estimate the distribution - assuming the gaussian distribution
+            pred_features, true_features = np.concatenate(pred_features), np.concatenate(true_features)
+            mu_pred, cov_pred = np.mean(pred_features, axis=0), np.cov(pred_features)
+            mu_true, cov_true = np.mean(true_features, axis=0), np.cov(true_features)
+            fid = calculate_frechet_distance(mu_pred, mu_true, cov_pred, cov_true)
+            print(f"\tvalidation FID: {fid:5f}")
+            with open(os.path.join(model.save_dir, "fid.txt"), 'a') as f:
+                f.write(f"epoch: {epoch} --> validation FID: {fid}\n")
+        
         for i, data in enumerate(dataset):  # inner loop within one epoch
             iter_start_time = time.time()  # timer for computation per iteration
             if total_iters % opt.print_freq == 0:
@@ -145,24 +203,4 @@ if __name__ == '__main__':
             model.save_networks('latest')
             model.save_networks(epoch)
         
-        # calculate FID at every 10 epoch
-        if epoch % 10 == 1:
-            pred_features, true_features = [], []
-            print("Calculating FID...")
-            for i, val_data in tqdm(enumerate(valid_data)):
-                model.set_input(val_data)
-                model.forward()
-                # feature extraction
-                pred_feature = inception(model.fake_B)
-                true_feature = inception(val_data)
-                pred_features.append(pred_feature)
-                true_features.append(true_features)
-
-            # estimate the distribution - assuming the gaussian distribution
-            pred_features, true_features = torch.cat(pred_features), torch.cat(true_features)
-            mu_pred, cov_pred = pred_features.mean(axis=0), torch.cov(pred_features)
-            mu_true, cov_true = true_features.mean(axis=0), torch.cov(true_features)
-            fid = calculate_frechet_distance(mu_pred, mu_true, cov_pred, cov_true)
-            print(f"\tvalidation FID: {fid:5f}")
-
         print('End of epoch %d / %d \t Time Taken: %d sec' % (epoch, opt.n_epochs + opt.n_epochs_decay, time.time() - epoch_start_time))

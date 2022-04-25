@@ -23,6 +23,7 @@ class AlignedDataset(BaseDataset):
         assert(self.opt.load_size >= self.opt.crop_size)   # crop_size should be smaller than the size of loaded image
         self.input_nc = self.opt.output_nc if self.opt.direction == 'BtoA' else self.opt.input_nc
         self.output_nc = self.opt.input_nc if self.opt.direction == 'BtoA' else self.opt.output_nc
+        self.rotate = opt.rotate
 
     def __getitem__(self, index):
         """Return a data point and its metadata information.
@@ -51,7 +52,7 @@ class AlignedDataset(BaseDataset):
         # TeethImageTranslation -> A should be the input of model (profile teeth image)
         # In Teeth Image Translation, only A-to-B mode is allowed.
                                     # : rotate randomly at a range of (-30, 30) degrees.
-        A_transform = get_transform(self.opt, transform_params, grayscale=(self.input_nc == 1), rotate=True)
+        A_transform = get_transform(self.opt, transform_params, grayscale=(self.input_nc == 1), rotate=self.rotate)
         B_transform = get_transform(self.opt, transform_params, grayscale=(self.output_nc == 1))
 
         A = A_transform(A)
