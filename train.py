@@ -147,7 +147,7 @@ if __name__ == '__main__':
         model.update_learning_rate()    # update learning rates in the beginning of every epoch.
         
         # calculate FID at every 10 epoch
-        if epoch % 10 == 1:
+        if epoch % 10 == 0:
             pred_features, true_features = [], []
             print("Calculating FID...")
 

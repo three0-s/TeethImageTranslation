@@ -32,6 +32,46 @@ from data import create_dataset
 from models import create_model
 from util.visualizer import save_images
 from util import html
+import torch
+from tqdm import tqdm
+from torchvision.models.inception import inception_v3
+from scipy import linalg
+import os
+
+
+# Pretrained inception model
+print(f"Loading pretrained inception v3 model...")
+class PartialInceptionNetwork(torch.nn.Module):
+    def __init__(self, transform_input=False):
+        super().__init__()
+        self.inception_network = inception_v3(pretrained=True)
+        self.inception_network.Mixed_7c.register_forward_hook(self.output_hook)
+        self.transform_input = transform_input
+
+    def output_hook(self, module, input, output):
+        # N x 2048 x 8 x 8
+        self.mixed_7c_output = output
+
+    def forward(self, x):
+        """
+        Args:
+            x: shape (N, 3, 299, 299) dtype: torch.float32 in range 0-1
+        Returns:
+            inception activations: torch.tensor, shape: (N, 2048), dtype: torch.float32
+        """
+        assert x.shape[1:] == (3, 299, 299), "Expected input shape to be: (N,3,299,299)" +\
+                                             ", but got {}".format(x.shape)
+        x = x * 2 -1 # Normalize to [-1, 1]
+
+        # Trigger output hook
+        self.inception_network(x)
+
+        # Output: N x 2048 x 1 x 1 
+        activations = self.mixed_7c_output
+        activations = torch.nn.functional.adaptive_avg_pool2d(activations, (1,1))
+        activations = activations.view(x.shape[0], 2048)
+        return activations
+inception = PartialInceptionNetwork()
 
 try:
     import wandb
@@ -47,6 +87,7 @@ if __name__ == '__main__':
     opt.serial_batches = True  # disable data shuffling; comment this line if results on randomly chosen images are needed.
     opt.no_flip = True    # no flip; comment this line if results on flipped images are needed.
     opt.display_id = -1   # no visdom display; the test code saves the results to a HTML file.
+    opt.rotate=False
     dataset = create_dataset(opt)  # create a dataset given opt.dataset_mode and other options
     model = create_model(opt)      # create a model given opt.model and other options
     model.setup(opt)               # regular setup: load and print networks; create schedulers
