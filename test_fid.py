@@ -7,7 +7,7 @@ import os
 from options.test_options import TestOptions
 from data import create_dataset
 from models import create_model
-
+from PIL import Image
 import torch
 from tqdm import tqdm
 import torchvision
@@ -16,6 +16,13 @@ from scipy import linalg
 import os
 import numpy as np
 
+ 
+def createFolder(directory):
+    try:
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+    except OSError:
+        print ('Error: Creating directory. ' +  directory)
 
 # Pretrained inception model
 print(f"Loading pretrained inception v3 model...")
@@ -70,8 +77,7 @@ def calculate_frechet_distance(mu1, mu2, cov1, cov2, eps=1e-6):
 
     tr_covmean = np.trace(covmean)
 
-    return (diff.dot(diff) + np.trace(sigma1)
-            + np.trace(sigma2) - 2 * tr_covmean)
+    return (diff.dot(diff) + np.trace(sigma1)+ np.trace(sigma2) - 2 * tr_covmean)
 
 class PartialInceptionNetwork(torch.nn.Module):
     def __init__(self, transform_input=False):
@@ -115,32 +121,50 @@ if __name__ == '__main__':
     opt.no_flip = True    # no flip; comment this line if results on flipped images are needed.
     opt.display_id = -1   # no visdom display; the test code saves the results to a HTML file.
     opt.rotate=False
-    opt.phase='val'
+    opt.phase='test'
+    opt.epoch = 90
     dataset = create_dataset(opt)  # create a dataset given opt.dataset_mode and other options
     model = create_model(opt)      # create a model given opt.model and other options
     model.setup(opt)               # regular setup: load and print networks; create schedulers
+    # model.eval()
     inception.to(model.device)
     inception.eval()
     resize_layer = torchvision.transforms.Resize((299, 299)).to(model.device)
+    print(model)
 
     pred_features, true_features = [], []
+    predictions, gts, inputs = [], [], []
     print("Calculating FID...")
 
     for i, test_data in tqdm(enumerate(dataset), total=len(dataset)):
         model.set_input(test_data)
         model.test()
+        # print(model.fake_B.shape,'\n', model.real_B.shape)
         
+        predictions.append(torch.permute(torch.squeeze(model.fake_B), (1, 2, 0)).detach().cpu().numpy())
+        gts.append(torch.permute(torch.squeeze(model.real_B), (1, 2, 0)).detach().cpu().numpy())
+        inputs.append(torch.permute(torch.squeeze(model.real_A), (1, 2, 0)).detach().cpu().numpy())
+
         # feature extraction
         pred_feature = inception(resize_layer(model.fake_B))
         true_feature = inception(resize_layer(model.real_B))
         pred_features.append(pred_feature.detach().cpu().numpy())
         true_features.append(true_feature.detach().cpu().numpy())
 
+    path = model.save_dir+f'/{opt.phase}_new_results'
+    createFolder(path)
+    for i, result in tqdm(enumerate(list(zip(inputs, predictions, gts))), total=len(inputs)):
+        out = (np.concatenate(result, axis=1)*0.5 + 0.5) * 255
+        # print(out.shape)
+        out = Image.fromarray(out.astype(np.uint8))
+        out.save(path+f'/{i+1}.png')
     # estimate the distribution - assuming the gaussian distribution
     pred_features, true_features = np.concatenate(pred_features), np.concatenate(true_features)
     mu_pred, cov_pred = np.mean(pred_features, axis=0), np.cov(pred_features)
     mu_true, cov_true = np.mean(true_features, axis=0), np.cov(true_features)
-    fid = calculate_frechet_distance(mu_pred, mu_true, cov_pred, cov_true)
-    print(f"\tvalidation FID: {fid:5f}")
-    with open(os.path.join(model.save_dir, "val_fid.txt"), 'a') as f:
-        f.write(f"{opt.name} val FID: {fid}\n")
+    # if the number of data exceeds 2,048, eps = 0
+    eps = 0 if opt.phase == 'test' or opt.phase == 'train' else 1e-7
+    fid = calculate_frechet_distance(mu_pred, mu_true, cov_pred, cov_true, eps)
+    print(f"\t {opt.phase} FID: {fid:5f}")
+    with open(os.path.join(model.save_dir, f"{opt.phase}_fid.txt"), 'a') as f:
+        f.write(f"{opt.name} {opt.phase} FID: {fid}\n")

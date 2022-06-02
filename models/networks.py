@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.nn import init
 import functools
 from torch.optim import lr_scheduler
-from dcn import DeformableConv2d
+from models.dcn import DeformableConv2d
 
 ###############################################################################
 # Helper Functions
@@ -485,7 +485,7 @@ class DeformUnetGenerator(nn.Module):
         We construct the U-Net from the innermost layer to the outermost layer.
         It is a recursive process.
         """
-        super(UnetGenerator, self).__init__()
+        super(DeformUnetGenerator, self).__init__()
         # construct unet structure
         unet_block = DeformUnetSkipConnectionBlock(ngf * 8, ngf * 8, input_nc=None, submodule=None, norm_layer=norm_layer, innermost=True)  # add the innermost layer
         for i in range(num_downs - 5):          # add intermediate layers with ngf * 8 filters
@@ -592,7 +592,7 @@ class DeformUnetSkipConnectionBlock(nn.Module):
             norm_layer          -- normalization layer
             use_dropout (bool)  -- if use dropout layers.
         """
-        super(UnetSkipConnectionBlock, self).__init__()
+        super(DeformUnetSkipConnectionBlock, self).__init__()
         self.outermost = outermost
         if type(norm_layer) == functools.partial:
             use_bias = norm_layer.func == nn.InstanceNorm2d
@@ -600,19 +600,25 @@ class DeformUnetSkipConnectionBlock(nn.Module):
             use_bias = norm_layer == nn.InstanceNorm2d
         if input_nc is None:
             input_nc = outer_nc
-        downconv = DeformableConv2d(input_nc, inner_nc, kernel_size=4,
+        downconv = nn.Conv2d(input_nc, inner_nc, kernel_size=4,
                              stride=2, padding=1, bias=use_bias)
-        downrelu = nn.LeakyReLU(0.2, True)
+        downrelu = nn.GELU()
         downnorm = norm_layer(inner_nc)
-        uprelu = nn.ReLU(True)
+        uprelu = nn.GELU()
         upnorm = norm_layer(outer_nc)
 
+        subconv = DeformableConv2d(outer_nc, outer_nc, kernel_size=3, stride=1, padding=1)
+        subrelu = nn.GELU()
+        subnorm = norm_layer(outer_nc)
+        
         if outermost:
             upconv = nn.ConvTranspose2d(inner_nc * 2, outer_nc,
                                         kernel_size=4, stride=2,
                                         padding=1)
             down = [downconv]
-            up = [uprelu, upconv, nn.Tanh()]
+            sub = [subrelu, subconv, subnorm]
+            up = [uprelu, upconv, *sub, nn.Tanh()]
+           
             model = down + [submodule] + up
         elif innermost:
             upconv = nn.ConvTranspose2d(inner_nc, outer_nc,
@@ -620,14 +626,16 @@ class DeformUnetSkipConnectionBlock(nn.Module):
                                         padding=1, bias=use_bias)
             down = [downrelu, downconv]
             up = [uprelu, upconv, upnorm]
-            model = down + up
+            sub = [subrelu, subconv, subnorm]
+            model = down + up + sub
         else:
             upconv = nn.ConvTranspose2d(inner_nc * 2, outer_nc,
                                         kernel_size=4, stride=2,
                                         padding=1, bias=use_bias)
             down = [downrelu, downconv, downnorm]
-            up = [uprelu, upconv, upnorm]
-
+            sub = [subrelu, subconv, subnorm]
+            up = [uprelu, upconv, upnorm, *sub]
+            
             if use_dropout:
                 model = down + [submodule] + up + [nn.Dropout(0.5)]
             else:
